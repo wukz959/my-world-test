@@ -1,0 +1,63 @@
+name: Vue CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-and-publish:
+    env:
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      DOCKER_REGISTRY: registry.cn-guangzhou.aliyuncs.com
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [16.x]
+    steps:
+    - uses: actions/checkout@v2
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node-version }}
+    - name: Install dependencies
+      run: npm install
+    - name: Run lint
+      run: npm run lint
+    - name: Run tests
+      run: npm run test
+    - name: Build
+      run: npm run build
+    - name: build-docker-image
+      run: | # 登录阿里云镜像仓库，打包项目jar包并上传到远程阿里云仓库
+        docker login --username=helloenen -p $DOCKER_PASSWORD $DOCKER_REGISTRY
+        docker rmi -f $DOCKER_REGISTRY/my-world-front/helloenen:latest
+        docker build -t $DOCKER_REGISTRY/my-world-front/helloenen:latest .
+        docker push $DOCKER_REGISTRY/my-world-front/helloenen:latest
+  deploy-enen:
+    needs: build-and-publish
+    env: # 定义环境变量
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      DOCKER_REGISTRY: registry.cn-guangzhou.aliyuncs.com
+      SERVER_USERNAME: root
+      SERVER_HOST: 8.134.180.176
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Set up SSH key
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker pull ${{ env.DOCKER_REGISTRY }}/my-world-front/helloenen:latest
+            docker rm -f my-world-front || true
+            docker run --network host -v /nas/my-world-front:/app/temp --env-file /opt/myworld-front-prod/env -d --name=my-world-front ${{ env.DOCKER_REGISTRY }}/my-world-front/helloenen:latest npm run serve:prod
+            docker system prune -f
